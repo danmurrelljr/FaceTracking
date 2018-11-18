@@ -29,6 +29,7 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     var detectionOverlayLayer: CALayer?
     var detectedFaceRectangleShapeLayer: CAShapeLayer?
     var detectedFaceLandmarksShapeLayer: CAShapeLayer?
+    var detectedContourShapeLayer: CAShapeLayer?
     
     // Vision requests
     private var detectionRequests: [VNDetectFaceRectanglesRequest]?
@@ -308,18 +309,32 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         faceLandmarksShapeLayer.anchorPoint = normalizedCenterPoint
         faceLandmarksShapeLayer.position = captureDeviceBoundsCenterPoint
         faceLandmarksShapeLayer.fillColor = nil
-        faceLandmarksShapeLayer.strokeColor = UIColor.yellow.withAlphaComponent(0.7).cgColor
+        faceLandmarksShapeLayer.strokeColor = UIColor.red.withAlphaComponent(0.7).cgColor
         faceLandmarksShapeLayer.lineWidth = 3
         faceLandmarksShapeLayer.shadowOpacity = 0.7
         faceLandmarksShapeLayer.shadowRadius = 5
+
+        let contourShapeLayer = CAShapeLayer()
+        contourShapeLayer.name = "FaceLandmarksLayer"
+        contourShapeLayer.bounds = captureDeviceBounds
+        contourShapeLayer.anchorPoint = normalizedCenterPoint
+        contourShapeLayer.position = captureDeviceBoundsCenterPoint
+        contourShapeLayer.fillColor = nil
+        contourShapeLayer.strokeColor = UIColor.white.withAlphaComponent(0.7).cgColor
+        contourShapeLayer.lineWidth = 6
+        contourShapeLayer.shadowOpacity = 0.7
+        contourShapeLayer.shadowRadius = 5
+
         
         overlayLayer.addSublayer(faceRectangleShapeLayer)
-        faceRectangleShapeLayer.addSublayer(faceLandmarksShapeLayer)
+        faceRectangleShapeLayer.addSublayer(contourShapeLayer)
+        contourShapeLayer.addSublayer(faceLandmarksShapeLayer)
         rootLayer.addSublayer(overlayLayer)
         
         self.detectionOverlayLayer = overlayLayer
         self.detectedFaceRectangleShapeLayer = faceRectangleShapeLayer
         self.detectedFaceLandmarksShapeLayer = faceLandmarksShapeLayer
+        self.detectedContourShapeLayer = contourShapeLayer
         
         self.updateLayerGeometry()
     }
@@ -372,42 +387,68 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         let rootLayerBounds = rootLayer.bounds
         overlayLayer.position = CGPoint(x: rootLayerBounds.midX, y: rootLayerBounds.midY)
     }
-    
-    fileprivate func addPoints(in landmarkRegion: VNFaceLandmarkRegion2D, to path: CGMutablePath, applying affineTransform: CGAffineTransform, closingWhenComplete closePath: Bool) {
-        let pointCount = landmarkRegion.pointCount
-        if pointCount > 1 {
-            let points: [CGPoint] = landmarkRegion.normalizedPoints
-            path.move(to: points[0], transform: affineTransform)
-            path.addLines(between: points, transform: affineTransform)
-            if closePath {
-                path.addLine(to: points[0], transform: affineTransform)
-                path.closeSubpath()
-            }
-        }
+
+  fileprivate func addPoints(in landmarkRegion: VNFaceLandmarkRegion2D, to path: CGMutablePath, applying affineTransform: CGAffineTransform, closingWhenComplete closePath: Bool) {
+    let pointCount = landmarkRegion.pointCount
+    if pointCount > 1 {
+      let points: [CGPoint] = landmarkRegion.normalizedPoints
+      path.move(to: points[0], transform: affineTransform)
+      path.addLines(between: points, transform: affineTransform)
+      if closePath {
+        path.addLine(to: points[0], transform: affineTransform)
+        path.closeSubpath()
+      }
     }
-    
-    fileprivate func addIndicators(to faceRectanglePath: CGMutablePath, faceLandmarksPath: CGMutablePath, for faceObservation: VNFaceObservation) {
+  }
+  fileprivate func addPoints(_ points: [CGPoint], to path: CGMutablePath, applying affineTransform: CGAffineTransform, closingWhenComplete closePath: Bool) {
+    if points.count > 1 {
+      path.move(to: points[0], transform: affineTransform)
+      path.addLines(between: points, transform: affineTransform)
+      if closePath {
+        path.addLine(to: points[0], transform: affineTransform)
+        path.closeSubpath()
+      }
+    }
+  }
+
+    fileprivate func addIndicators(to faceRectanglePath: CGMutablePath, contoursPath: CGMutablePath, faceLandmarksPath: CGMutablePath, for faceObservation: VNFaceObservation) {
         let displaySize = self.captureDeviceResolution
         
         let faceBounds = VNImageRectForNormalizedRect(faceObservation.boundingBox, Int(displaySize.width), Int(displaySize.height))
         faceRectanglePath.addRect(faceBounds)
-        
+
         if let landmarks = faceObservation.landmarks {
             // Landmarks are relative to -- and normalized within --- face bounds
             let affineTransform = CGAffineTransform(translationX: faceBounds.origin.x, y: faceBounds.origin.y)
                 .scaledBy(x: faceBounds.size.width, y: faceBounds.size.height)
+
+//          NSLog("Points in faceCountour: \(String(describing: landmarks.faceContour?.normalizedPoints))")
             
             // Treat eyebrows and lines as open-ended regions when drawing paths.
             let openLandmarkRegions: [VNFaceLandmarkRegion2D?] = [
                 landmarks.leftEyebrow,
                 landmarks.rightEyebrow,
-                landmarks.faceContour,
                 landmarks.noseCrest,
                 landmarks.medianLine
             ]
             for openLandmarkRegion in openLandmarkRegions where openLandmarkRegion != nil {
                 self.addPoints(in: openLandmarkRegion!, to: faceLandmarksPath, applying: affineTransform, closingWhenComplete: false)
             }
+
+            // Face contours
+            let faceContourRegions: [VNFaceLandmarkRegion2D?] = [
+              landmarks.faceContour
+            ]
+            for contourRegion in faceContourRegions where contourRegion != nil {
+              self.addPoints(in: contourRegion!, to: contoursPath, applying: affineTransform, closingWhenComplete: false)
+            }
+
+            if let flippedFaceCountourPoints = landmarks.faceContour?.normalizedPoints.map({ point -> CGPoint in
+              return CGPoint(x: point.x, y: (-point.y) + 1.25)
+            }) {
+              self.addPoints(flippedFaceCountourPoints, to: contoursPath, applying: affineTransform, closingWhenComplete: false)
+            }
+
             
             // Draw eyes, lips, and nose as closed regions.
             let closedLandmarkRegions: [VNFaceLandmarkRegion2D?] = [
@@ -426,7 +467,8 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
     /// - Tag: DrawPaths
     fileprivate func drawFaceObservations(_ faceObservations: [VNFaceObservation]) {
         guard let faceRectangleShapeLayer = self.detectedFaceRectangleShapeLayer,
-            let faceLandmarksShapeLayer = self.detectedFaceLandmarksShapeLayer
+            let faceLandmarksShapeLayer = self.detectedFaceLandmarksShapeLayer,
+            let faceContourShapeLayer = self.detectedContourShapeLayer
             else {
             return
         }
@@ -436,15 +478,18 @@ class ViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDele
         CATransaction.setValue(NSNumber(value: true), forKey: kCATransactionDisableActions)
         
         let faceRectanglePath = CGMutablePath()
+        let faceContourPath = CGMutablePath()
         let faceLandmarksPath = CGMutablePath()
         
         for faceObservation in faceObservations {
             self.addIndicators(to: faceRectanglePath,
+                               contoursPath: faceContourPath,
                                faceLandmarksPath: faceLandmarksPath,
                                for: faceObservation)
         }
         
         faceRectangleShapeLayer.path = faceRectanglePath
+        faceContourShapeLayer.path = faceContourPath
         faceLandmarksShapeLayer.path = faceLandmarksPath
         
         self.updateLayerGeometry()
